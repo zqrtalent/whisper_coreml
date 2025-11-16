@@ -175,6 +175,27 @@ class PyTorchInference(Inference):
                 # update the key/value cache to contain the selected sequences
                 self.kv_cache[module] = self.kv_cache[module][source_indices].detach()
 
+class PyTorchInference_CoreMl(Inference):
+    def __init__(self, model: "Whisper", initial_token_length: int):
+        self.model: "Whisper" = model
+        self.initial_token_length = initial_token_length
+        
+    def logits(self, tokens: Tensor, audio_features: Tensor, pos: Tensor) -> Tensor:
+        if tokens.shape[-1] > self.initial_token_length:
+            # only need to use the last token except in the first forward pass
+            tokens = tokens[:, -1:]
+
+        results = self.model.decoder(tokens, audio_features, pos)
+        
+        logits = results[0]
+        return logits
+
+    def cleanup_caching(self):
+        return
+
+    def rearrange_kv_cache(self, source_indices):
+        return
+
 
 class SequenceRanker:
     def rank(

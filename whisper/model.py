@@ -1,13 +1,15 @@
 import base64
 import gzip
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+
+from whisper.coreml_model import TextDecoder_coreml
+from whisper.model_shared import Conv1d, LayerNorm, Linear, ModelDimensions, sinusoids
 
 from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
@@ -20,53 +22,6 @@ try:
 except (ImportError, RuntimeError, OSError):
     scaled_dot_product_attention = None
     SDPA_AVAILABLE = False
-
-
-@dataclass
-class ModelDimensions:
-    n_mels: int
-    n_audio_ctx: int
-    n_audio_state: int
-    n_audio_head: int
-    n_audio_layer: int
-    n_vocab: int
-    n_text_ctx: int
-    n_text_state: int
-    n_text_head: int
-    n_text_layer: int
-
-
-class LayerNorm(nn.LayerNorm):
-    def forward(self, x: Tensor) -> Tensor:
-        return super().forward(x.float()).type(x.dtype)
-
-
-class Linear(nn.Linear):
-    def forward(self, x: Tensor) -> Tensor:
-        return F.linear(
-            x,
-            self.weight.to(x.dtype),
-            None if self.bias is None else self.bias.to(x.dtype),
-        )
-
-
-class Conv1d(nn.Conv1d):
-    def _conv_forward(
-        self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
-    ) -> Tensor:
-        return super()._conv_forward(
-            x, weight.to(x.dtype), None if bias is None else bias.to(x.dtype)
-        )
-
-
-def sinusoids(length, channels, max_timescale=10000):
-    """Returns sinusoids for positional embedding"""
-    assert channels % 2 == 0
-    log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
-    inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
-    scaled_time = torch.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
-    return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
-
 
 @contextmanager
 def disable_sdpa():
@@ -250,7 +205,7 @@ class TextDecoder(nn.Module):
 
 
 class Whisper(nn.Module):
-    def __init__(self, dims: ModelDimensions):
+    def __init__(self, dims: ModelDimensions, is_coreml_model: bool = True, token_seq_len: int = 1):
         super().__init__()
         self.dims = dims
         self.encoder = AudioEncoder(
@@ -266,6 +221,13 @@ class Whisper(nn.Module):
             self.dims.n_text_state,
             self.dims.n_text_head,
             self.dims.n_text_layer,
+        ) if not is_coreml_model else TextDecoder_coreml(
+            self.dims.n_vocab,
+            self.dims.n_text_ctx,
+            self.dims.n_text_state,
+            self.dims.n_text_head,
+            self.dims.n_text_layer,
+            n_token_seq_len=token_seq_len
         )
         # use the last half among the decoder layers for time alignment by default;
         # to use a specific set of heads, see `set_alignment_heads()` below.
@@ -339,6 +301,28 @@ class Whisper(nn.Module):
 
         self.decoder.apply(install_hooks)
         return cache, hooks
+    
+class Whisper_CrossKV_Generator(nn.Module):
+    def __init__(self, whisper: Whisper):
+        super().__init__()
+        self.blocks = whisper.decoder.blocks
+    
+    def forward(self, xa: Tensor) -> tuple[Tensor, Tensor]:
+        """
+        Generates a key/value cache based on audio features
+
+        xa - audio features tensor with shape (B,C,S) => (1,1500,384)
+        """
+        k_cache_stack: list[Tensor] = []
+        v_cache_stack: list[Tensor] = []
+        for block in self.blocks:
+            k = block.cross_attn.key(xa).detach()
+            v = block.cross_attn.value(xa).detach()
+            k_cache_stack.append(k)
+            v_cache_stack.append(v)
+        k_cache = torch.stack(k_cache_stack, dim=0)
+        v_cache = torch.stack(v_cache_stack, dim=0)
+        return (k_cache, v_cache)
 
     detect_language = detect_language_function
     transcribe = transcribe_function

@@ -105,6 +105,8 @@ def load_model(
     device: Optional[Union[str, torch.device]] = None,
     download_root: str = None,
     in_memory: bool = False,
+    is_coreml_model: bool = False, 
+    token_seq_len: int = 1,
 ) -> Whisper:
     """
     Load a Whisper ASR model
@@ -152,7 +154,7 @@ def load_model(
     del checkpoint_file
 
     dims = ModelDimensions(**checkpoint["dims"])
-    model = Whisper(dims)
+    model = Whisper(dims, is_coreml_model=is_coreml_model, token_seq_len=token_seq_len)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     if alignment_heads is not None:

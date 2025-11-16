@@ -1,3 +1,11 @@
+torch==2.7.0
+coremltools==9.0b1
+datasets
+torchcodec
+librosa 
+matplotlib 
+soundfile 
+argparse
 numba
 numpy
 torch

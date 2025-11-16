@@ -9,3 +9,5 @@ thumbs.db
 .DS_Store
 .idea
 
+whisper_env/
+out/
