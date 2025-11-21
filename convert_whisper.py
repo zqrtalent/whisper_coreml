@@ -178,6 +178,14 @@ def convert_decoder_model(model: "Whisper", model_type: str = "tiny", out_dir: s
         f.write(f"{mlmodel._mil_program}")
     return mlmodel
 
+def create_multi_function_model(mlpackages: list[(str,str)], out_model_path: str):
+    desc = ct.utils.MultiFunctionDescriptor()
+    
+    for i,(modelPath,functionName) in enumerate(mlpackages):
+        if i == 0:
+            desc.default_function_name = functionName
+        desc.add_function(model_path=modelPath, src_function_name="main", target_function_name=functionName)
+    ct.utils.save_multifunction(desc, out_model_path)
 
 def main():
     out_dir = "out"
@@ -203,10 +211,18 @@ def main():
     convert_decoder_model(model3, model_type=model_type,
                           out_dir=out_dir, sequence_len=3)
     print("decoder model converted.")
-
+    
     print("converting a cross_kv cache model.")
     convert_cross_state_cache_model(model, model_type=model_type, out_dir=out_dir )
     print("cross_kv cache model converted.")
+    
+    print("create a multifunction mlpackage for decoders.")
+    decoder_models = [
+        (f"{out_dir}/Whisper_decoder_3_{model_type}.mlpackage", "main_3"),
+        (f"{out_dir}/Whisper_decoder_1_{model_type}.mlpackage", "main_1")
+    ]
+    create_multi_function_model(decoder_models, f"{out_dir}/Whisper_decoder_{model_type}.mlpackage")
+    print("multi function model created.")
 
 
 if __name__ == "__main__":

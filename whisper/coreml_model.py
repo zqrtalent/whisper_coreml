@@ -39,10 +39,10 @@ class MultiHeadAttention_Decoder(nn.Module):
         pos: Optional[Tensor] = None,
         
         # v_new: Optional[Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> torch.Tensor:
         n_batch, n_ctx, n_state = q.shape
         scale = (n_state // self.n_head) ** -0.25
-
+        
         # (B,nH,1,Dh) => (1,6,1,64)
         q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
         # (B,nH,T,Dh) => (1,6,1500 | 448,64)
@@ -53,31 +53,42 @@ class MultiHeadAttention_Decoder(nn.Module):
         v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
         # if k_new is not None and v_new is not None:
         #     v_new = v_new.view(*v_new.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
-          
-        qk = (q.to(q.dtype) * scale) @ (k.to(q.dtype) * scale).transpose(-1, -2) # (1,6,1,448)
-        # if k_new is not None and v_new is not None:
-        #     qk_new = (q.to(q.dtype) * scale) @ (k_new.to(q.dtype) * scale).transpose(-1, -2) # (1,6,1,448)
         
-        # Apply mask.
-        # 0 -inf -inf -inf ... -inf
-        # 0   0  -inf -inf ... -inf
-        # 0   0   0   -inf ... -inf
-        if mask is not None:
-            idx = torch.arange(0,self.n_token_seq_len) + pos
-            qk = qk + mask[idx,:self.n_text_context]
+        if SDPA_AVAILABLE:
+            attn_mask: Tensor = None
+            if mask is not None:
+                idx = torch.arange(0,self.n_token_seq_len) + pos
+                attn_mask = mask[idx,:self.n_text_context]
+            out = scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+            out = out.permute(0, 2, 1, 3).flatten(start_dim=2) # (B, L, E) (Batch, Source (Q), Embeddings)
+            return out
+        else:
+            qk = (q.to(q.dtype) * scale) @ (k.to(q.dtype) * scale).transpose(-1, -2) # (1,6,1,448)
+            # if k_new is not None and v_new is not None:
+            #     qk_new = (q.to(q.dtype) * scale) @ (k_new.to(q.dtype) * scale).transpose(-1, -2) # (1,6,1,448)
             
-        qk = qk.float()
-        # if k_new is not None and v_new is not None:
-        #     qk_new = qk_new.float()
-        w = F.softmax(qk, dim=-1).to(q.dtype)
-        # if k_new is not None and v_new is not None:
-        #     w_new = F.softmax(qk_new, dim=-1).to(q.dtype)
-        out = (w @ v.to(q.dtype)).permute(0, 2, 1, 3).flatten(start_dim=2)
-        # out_new = None
-        # if k_new is not None and v_new is not None:
-        #     out_new = (w_new @ v_new.to(q.dtype)).permute(0, 2, 1, 3).flatten(start_dim=2)
-        return out
-
+            # Apply mask.
+            # 0 -inf -inf -inf ... -inf
+            # 0   0  -inf -inf ... -inf
+            # 0   0   0   -inf ... -inf
+            if mask is not None:
+                # qk = qk + mask[:n_ctx,:n_ctx] 
+                # qk = qk + mask[pos:pos + n_ctx,:self.n_ctx]
+                idx = torch.arange(0,self.n_token_seq_len) + pos
+                qk = qk + mask[idx,:self.n_text_context]
+                # qk = qk + mask[idx,:self.n_text_context]
+                
+            qk = qk.float()
+            # if k_new is not None and v_new is not None:
+            #     qk_new = qk_new.float()
+            w = F.softmax(qk, dim=-1).to(q.dtype)
+            # if k_new is not None and v_new is not None:
+            #     w_new = F.softmax(qk_new, dim=-1).to(q.dtype)
+            out = (w @ v.to(q.dtype)).permute(0, 2, 1, 3).flatten(start_dim=2)
+            # out_new = None
+            # if k_new is not None and v_new is not None:
+            #     out_new = (w_new @ v_new.to(q.dtype)).permute(0, 2, 1, 3).flatten(start_dim=2)
+            return out
 
 class MultiHeadAttention_Decoder_CrossAttn(MultiHeadAttention_Decoder):
     def __init__(self, n_state, n_head, n_layer, n_text_context, n_token_seq_len):

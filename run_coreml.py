@@ -16,9 +16,11 @@ def exact_div(x, y):
     return x // y
 
 cu = ct.ComputeUnit.ALL
+use_multi_function_decoder_model = True
 encoder_mlprogram_path = "out/Whisper_encoder_tiny.mlpackage"
-decoder_mlprogram_path = "out/Whisper_decoder_1_tiny.mlpackage"
+decoder_1_mlprogram_path = "out/Whisper_decoder_1_tiny.mlpackage"
 decoder_3_mlprogram_path = "out/Whisper_decoder_3_tiny.mlpackage"
+decoder_mlprogram_path = "out/Whisper_decoder_tiny.mlpackage"
 cross_kv_cache_mlprogram_path = "out/Whisper_cross_kv_cache_tiny.mlpackage"
 
 #ModelDimensions(n_mels=80, n_audio_ctx=1500, n_audio_state=384, n_audio_head=6, n_audio_layer=4, n_vocab=51865, n_text_ctx=448, n_text_state=384, n_text_head=6, n_text_layer=4)
@@ -42,6 +44,14 @@ N_FRAMES = exact_div(N_SAMPLES, HOP_LENGTH)  # 3000 frames in a mel spectrogram 
 N_SAMPLES_PER_TOKEN = HOP_LENGTH * 2  # the initial convolutions has stride 2
 FRAMES_PER_SECOND = exact_div(SAMPLE_RATE, HOP_LENGTH)  # 10ms per audio frame
 TOKENS_PER_SECOND = exact_div(SAMPLE_RATE, N_SAMPLES_PER_TOKEN)  # 20ms per audio token
+
+def load_decoder_mlprogram(input_seq_length: 1|3, use_multifunction_decoder_model: bool = True) -> ct.models.MLModel:
+    """
+    Load decoder mlmodel. Either use 1 or 3 seq length individual models or multifunction single model.
+    """
+    if use_multifunction_decoder_model:
+        return ct.models.MLModel(decoder_mlprogram_path, compute_units=cu, function_name=f"main_{input_seq_length}")
+    return ct.models.MLModel(decoder_1_mlprogram_path if input_seq_length == 1 else decoder_3_mlprogram_path, compute_units=cu)
 
 def encode_audio(m: ct.models.MLModel, audio_file: str):
     mel = log_mel_spectrogram(audio_file, n_mels, padding=N_SAMPLES)
@@ -225,7 +235,7 @@ def test_decoder_use_case_1(model: Whisper_real, audio_features, cross_cache_k, 
     print("Running decoder using coreml.")
     # [50258,50259,50359]
     tokens = [50258] 
-    m_decoder = ct.models.MLModel(decoder_mlprogram_path, compute_units=cu)
+    m_decoder = load_decoder_mlprogram(input_seq_length=1, use_multifunction_decoder_model=use_multi_function_decoder_model)
     state = m_decoder.make_state()
     decoder_result_ml = decode_sequence(m_decoder, tokens, audio_features, cross_cache_k, cross_cache_v, pos=0, state=state)
     print(decoder_result_ml.shape)
@@ -256,8 +266,8 @@ def test_decoder_use_case_2(model: Whisper_real, audio_features, cross_cache_k, 
     # Run decoder
     print("Running decoder using coreml.")
     tokens = [50258,50259,50359]
-    m_decoder_3 = ct.models.MLModel(decoder_3_mlprogram_path, compute_units=cu)
-    m_decoder_1 = ct.models.MLModel(decoder_mlprogram_path, compute_units=cu)
+    m_decoder_3 = load_decoder_mlprogram(input_seq_length=3, use_multifunction_decoder_model=use_multi_function_decoder_model)
+    m_decoder_1 = load_decoder_mlprogram(input_seq_length=1, use_multifunction_decoder_model=use_multi_function_decoder_model)
     state = m_decoder_3.make_state()
     decoder_result_ml = decode_sequence(m_decoder_3, tokens, audio_features, cross_cache_k, cross_cache_v, pos=0, state=state)
     print(decoder_result_ml.shape)
@@ -343,8 +353,8 @@ def transcribe(audio_file: str):
     pos = 0
     max_tokens = n_text_ctx/2
     tokens = torch.tensor([[_sot, _en, _transcribe]], dtype=torch.int32) #
-    m_decoder_1: ct.models.MLModel = ct.models.MLModel(decoder_mlprogram_path, compute_units=cu)
-    m_decoder_3: ct.models.MLModel = ct.models.MLModel(decoder_3_mlprogram_path, compute_units=cu)
+    m_decoder_1: ct.models.MLModel = load_decoder_mlprogram(input_seq_length=1, use_multifunction_decoder_model=use_multi_function_decoder_model)
+    m_decoder_3: ct.models.MLModel = load_decoder_mlprogram(input_seq_length=3, use_multifunction_decoder_model=use_multi_function_decoder_model)
     state = m_decoder_1.make_state()
     
     sum_logprobs: Tensor = torch.zeros((n_batch), dtype=torch.float32)
@@ -417,7 +427,7 @@ import argparse
 
 if __name__ == "__main__":
     audio_file = "./audio/sample.m4a"
-    # audio_file = "./audio/Saitama vs Genos Fight  One Punch Man.mp3"
+    audio_file = "./audio/Saitama vs Genos Fight  One Punch Man.mp3"
     # audio_file = "./audio/Formula News.mp3"
     model_name = "tiny"
     
@@ -426,7 +436,6 @@ if __name__ == "__main__":
     parser.add_argument("--run_transcribe", type=bool, required=False)
     args = parser.parse_args()
     
-    print(args)
     run_test = args.run_test if args.run_test is not None else True
     if run_test:
         test_model(audio_file, model_name)
